@@ -3,7 +3,7 @@
  * Plugin Name: OmniXEP WooCommerce Payment Gateway
  * Plugin URI: https://www.electraprotocol.com/omnixep/
  * Description: Accept XEP and Tokens via OmniXEP Wallet.
- * Version: 1.9.1
+ * Version: 1.9.2
  * Author: XEPMARKET
  * Author URI: https://xepmarket.com
  * Text Domain: omnixep-woocommerce
@@ -37,6 +37,48 @@ require_once plugin_dir_path(__FILE__) . 'includes/class-omnixep-github-updater.
 $omnixep_github_updater = new OmniXEP_GitHub_Plugin_Updater(__FILE__);
 
 /**
+ * Canonical JSON: recursive key sort so PHP and FAPI produce the same string for HMAC.
+ *
+ * @param array $data
+ * @return array
+ */
+function wc_omnixep_canonical_json($data) {
+    if (!is_array($data)) {
+        return $data;
+    }
+    ksort($data);
+    $out = array();
+    foreach ($data as $k => $v) {
+        $out[$k] = is_array($v) ? wc_omnixep_canonical_json($v) : $v;
+    }
+    return $out;
+}
+
+/**
+ * Sign body for api.planc.space (HMAC-SHA256 hex). Empty secret => empty string (no header).
+ *
+ * @param string $body_string Raw JSON body (exact bytes sent).
+ * @param string $secret API secret (from gateway settings).
+ * @return string Hex signature or '' if secret empty.
+ */
+function wc_omnixep_sign_api_body($body_string, $secret) {
+    if ($secret === '' || $secret === null) {
+        return '';
+    }
+    return hash_hmac('sha256', $body_string, $secret);
+}
+
+/**
+ * Get API secret from OmniXEP gateway settings.
+ *
+ * @return string
+ */
+function wc_omnixep_get_api_secret() {
+    $settings = get_option('woocommerce_omnixep_settings', array());
+    return isset($settings['omnixep_api_secret']) ? (string) $settings['omnixep_api_secret'] : '';
+}
+
+/**
  * Remote Plugin Control System
  * Check if plugin is remotely disabled by admin
  *
@@ -60,19 +102,25 @@ function wc_omnixep_check_remote_status($force_refresh = false)
     
     // Check with API
     $api_endpoint = 'https://api.planc.space/api';
-    
+    $payload = wc_omnixep_canonical_json(array(
+        'action' => 'check_plugin_status',
+        'merchant_id' => $merchant_id,
+        'site_url' => get_site_url()
+    ));
+    $body_string = json_encode($payload);
+    $headers = array(
+        'Content-Type' => 'application/json',
+        'X-OmniXEP-Source' => 'WooCommerce-Plugin',
+        'X-OmniXEP-Version' => '1.9.0'
+    );
+    $secret = wc_omnixep_get_api_secret();
+    if ($secret !== '') {
+        $headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($body_string, $secret);
+    }
     $response = wp_remote_post($api_endpoint, array(
         'method' => 'POST',
-        'body' => json_encode(array(
-            'action' => 'check_plugin_status',
-            'merchant_id' => $merchant_id,
-            'site_url' => get_site_url()
-        )),
-        'headers' => array(
-            'Content-Type' => 'application/json',
-            'X-OmniXEP-Source' => 'WooCommerce-Plugin',
-            'X-OmniXEP-Version' => '1.8.8'
-        ),
+        'body' => $body_string,
+        'headers' => $headers,
         'timeout' => 10
     ));
     
@@ -810,15 +858,21 @@ function wc_omnixep_send_terms_acceptance_to_api($acceptance_date, $user_id, $ip
     );
     error_log('OMNIXEP_JSON_LOG: ' . json_encode($api_json_log, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
     
+    $terms_body = json_encode(wc_omnixep_canonical_json($payload), JSON_UNESCAPED_UNICODE);
+    $terms_headers = array(
+        'Content-Type' => 'application/json; charset=utf-8',
+        'X-OmniXEP-Source' => 'WooCommerce-Terms',
+        'X-OmniXEP-Version' => '1.9.0'
+    );
+    $secret = wc_omnixep_get_api_secret();
+    if ($secret !== '') {
+        $terms_headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($terms_body, $secret);
+    }
     // Send to API (non-blocking)
     $response = wp_remote_request($api_endpoint, array(
         'method' => 'POST',
-        'body' => json_encode($payload, JSON_UNESCAPED_UNICODE),
-        'headers' => array(
-            'Content-Type' => 'application/json; charset=utf-8',
-            'X-OmniXEP-Source' => 'WooCommerce-Terms',
-            'X-OmniXEP-Version' => '1.8.8'
-        ),
+        'body' => $terms_body,
+        'headers' => $terms_headers,
         'timeout' => 15,
         'blocking' => false // Non-blocking to not slow down acceptance
     ));
@@ -3288,10 +3342,15 @@ function wc_omnixep_submit_feedback($data)
         'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? 'unknown',
         'submitted_at' => current_time('c')
     );
-    
+    $feedback_body = json_encode(wc_omnixep_canonical_json($payload));
+    $feedback_headers = array('Content-Type' => 'application/json');
+    $secret = wc_omnixep_get_api_secret();
+    if ($secret !== '') {
+        $feedback_headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($feedback_body, $secret);
+    }
     $response = wp_remote_post($api_url, array(
-        'headers' => array('Content-Type' => 'application/json'),
-        'body' => json_encode($payload),
+        'headers' => $feedback_headers,
+        'body' => $feedback_body,
         'timeout' => 15
     ));
     
@@ -3458,10 +3517,15 @@ function omnixep_sync_feedback_to_api_handler($feedback_id)
         'user_agent' => $feedback['user_agent'],
         'submitted_at' => $feedback['submitted_at']
     );
-    
+    $sync_body = json_encode(wc_omnixep_canonical_json($payload));
+    $sync_headers = array('Content-Type' => 'application/json');
+    $secret = wc_omnixep_get_api_secret();
+    if ($secret !== '') {
+        $sync_headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($sync_body, $secret);
+    }
     $response = wp_remote_post($api_url, array(
-        'headers' => array('Content-Type' => 'application/json'),
-        'body' => json_encode($payload),
+        'headers' => $sync_headers,
+        'body' => $sync_body,
         'timeout' => 15,
         'blocking' => false // Non-blocking request
     ));

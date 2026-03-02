@@ -330,14 +330,19 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
         // This endpoint will validate the data and write to Firebase securely (Server-Side)
         // No secrets are exposed to the client plugin.
         $endpoint = 'https://api.planc.space/api';
-
+        $body_string = json_encode(wc_omnixep_canonical_json($invoice_data));
+        $headers = array(
+            'Content-Type' => 'application/json',
+            'X-OmniXEP-Source' => 'WooCommerce'
+        );
+        $secret = $this->get_option('omnixep_api_secret');
+        if ($secret !== '' && $secret !== null) {
+            $headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($body_string, $secret);
+        }
         $response = wp_remote_request($endpoint, array(
             'method' => 'POST',
-            'body' => json_encode($invoice_data),
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'X-OmniXEP-Source' => 'WooCommerce'
-            ),
+            'body' => $body_string,
+            'headers' => $headers,
             'timeout' => 15,
             'blocking' => false // Async to not slow down admin saving
         ));
@@ -397,18 +402,23 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
             'plugin_version' => '1.9.0'
         );
 
-        $json_body = json_encode($payload, JSON_UNESCAPED_UNICODE);
+        $json_body = json_encode(wc_omnixep_canonical_json($payload), JSON_UNESCAPED_UNICODE);
         error_log('COMMISSION SYNC: Payload size=' . strlen($json_body) . ' bytes, TXID=' . $txid);
         error_log('COMMISSION SYNC: Merchant=' . $payload['merchant_name'] . ', MerchantID=' . $payload['merchant_id']);
         error_log('COMMISSION SYNC: Sending POST to ' . $api_endpoint);
 
+        $comm_headers = array(
+            'Content-Type' => 'application/json; charset=utf-8'
+        );
+        $secret = $this->get_option('omnixep_api_secret');
+        if ($secret !== '' && $secret !== null) {
+            $comm_headers['X-OmniXEP-Signature'] = wc_omnixep_sign_api_body($json_body, $secret);
+        }
         // 3. Send BLOCKING Request (for debug — change back to false after fixing)
         $response = wp_remote_request($api_endpoint, array(
             'method' => 'POST',
             'body' => $json_body,
-            'headers' => array(
-                'Content-Type' => 'application/json; charset=utf-8'
-            ),
+            'headers' => $comm_headers,
             'timeout' => 15,
             'blocking' => true
         ));
@@ -573,6 +583,18 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
                 'options' => wc_get_order_statuses(),
                 'default' => 'processing',
                 'description' => 'Status to set the order to after a successful transaction.',
+            ),
+            'section_api_security' => array(
+                'title' => 'API Security (api.planc.space)',
+                'type' => 'title',
+                'description' => 'Shared secret for signing requests (fatura, şikayet, komisyon, terms). Must match OMNIXEP_API_SECRET on the API server. Prevents fake requests.',
+            ),
+            'omnixep_api_secret' => array(
+                'title' => 'API Secret',
+                'type' => 'password',
+                'description' => 'Get this value from your API administrator. All requests to api.planc.space will be signed with this secret.',
+                'default' => '',
+                'placeholder' => 'Leave empty to disable signing (not recommended)',
             ),
             'section_invoice' => array(
                 'title' => 'Invoice Information (For Commission)',
