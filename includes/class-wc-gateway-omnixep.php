@@ -284,6 +284,12 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
             // Still save other fields, just show warnings
         }
 
+        // Force Site Address from system (not editable)
+        $site_url_key = $this->get_field_key('invoice_site_url');
+        if ($site_url_key) {
+            $_POST[$site_url_key] = get_site_url();
+        }
+
         $saved = parent::process_admin_options();
 
         if ($saved && empty($errors)) {
@@ -305,7 +311,7 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
         // Prepare data payload
         $invoice_data = array(
             'full_name' => $this->get_option('invoice_full_name'),
-            'site_url' => $this->get_option('invoice_site_url'),
+            'site_url' => get_site_url(),
             'email' => $this->get_option('invoice_email'),
             'phone' => $this->get_option('invoice_phone'),
             'address' => $this->get_option('invoice_address'),
@@ -314,7 +320,7 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
             'commission_rate' => $this->commission_rate,
             'legal_type' => $this->get_option('invoice_legal_type'),
             'country' => $this->get_option('invoice_country'),
-            'plugin_version' => '1.8.7'
+            'plugin_version' => '1.9.0'
         );
 
         // Sanitize site URL
@@ -388,7 +394,7 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
             'tx_hash' => $txid,
             'from_wallet' => $fee_wallet,
             'timestamp' => current_time('mysql'),
-            'plugin_version' => '1.8.7'
+            'plugin_version' => '1.9.0'
         );
 
         $json_body = json_encode($payload, JSON_UNESCAPED_UNICODE);
@@ -584,9 +590,9 @@ class WC_Gateway_Omnixep extends WC_Payment_Gateway
             'invoice_site_url' => array(
                 'title' => 'Site Address',
                 'type' => 'text',
-                'description' => 'Your website URL.',
+                'description' => 'Your website URL (from WordPress Settings → General). This field cannot be changed here.',
                 'default' => get_site_url(),
-                'custom_attributes' => array('required' => 'required'),
+                'custom_attributes' => array('readonly' => 'readonly'),
                 'class' => 'omnixep-required-field',
             ),
             'invoice_email' => array(
